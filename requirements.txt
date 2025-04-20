@@ -1,5 +1,4 @@
 Flask==3.0.0
-tensorflow==2.17.0
 numpy
 deep-translator
 gunicorn
