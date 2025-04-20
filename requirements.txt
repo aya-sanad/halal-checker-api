@@ -1,5 +1,6 @@
 Flask==3.0.0
-tensorflow==2.13.0
+tensorflow==2.19.0
+
 numpy
 deep-translator
 langid
