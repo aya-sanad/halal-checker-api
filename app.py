@@ -4,13 +4,12 @@ import numpy as np
 import os
 import logging
 from tensorflow.keras.preprocessing.sequence import pad_sequences
+from deep_translator import GoogleTranslator
 from tensorflow.keras.preprocessing.text import tokenizer_from_json
-from deep_translator import GoogleTranslator  
-import langid
-from functools import lru_cache
 
 # Configure Logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -21,10 +20,10 @@ MODEL_PATH = "halal_model.h5"
 TOKENIZER_PATH = "tokenizer.json"
 MAX_LENGTH = 50
 
-# Warm-up model loading on the first request
 logging.info("📥 Loading trained LSTM model...")
 try:
     model = tf.keras.models.load_model(MODEL_PATH)
+    model.predict(np.zeros((1, MAX_LENGTH)))  # Warm-up model
     logging.info("✅ Model loaded successfully!")
 except Exception as e:
     logging.error(f"❌ Model loading failed: {e}")
@@ -38,35 +37,35 @@ if os.path.exists(TOKENIZER_PATH):
 else:
     raise FileNotFoundError("❌ Tokenizer file not found!")
 
+
 # Home Route
 @app.route("/")
 def home():
-    return jsonify({"message": "Welcome to the Halal Ingredient Classification API!"}), 200
+    return jsonify(
+        {"message":
+         "Welcome to the Halal Ingredient Classification API!"}), 200
 
-# Translation Function with Caching (Improved using lru_cache)
-@lru_cache(maxsize=100)
-def translate_text(text, src_lang, dest_lang="en"):
+
+# Translation Function with Caching
+translation_cache = {}
+
+
+def translate_text(text, src_lang="auto", dest_lang="en"):
     """Translates text with caching to optimize performance."""
     if src_lang == dest_lang or not text.strip():
-        return text  
+        return text
+    cache_key = f"{text}-{src_lang}-{dest_lang}"
+    if cache_key in translation_cache:
+        return translation_cache[cache_key]
     try:
-        translated = GoogleTranslator(source=src_lang, target=dest_lang).translate(text)
+        translated = GoogleTranslator(source=src_lang,
+                                      target=dest_lang).translate(text)
+        translation_cache[cache_key] = translated
         return translated
     except Exception as e:
         logging.warning(f"⚠️ Translation failed: {e}")
-        return text  
+        return text
 
-# Enhanced Language Detection with fallback
-def detect_language(text):
-    """Detects language with a fallback for misclassified English words."""
-    detected_lang = langid.classify(text)[0]
-    
-    # Correct common misclassification: 'beef gelatin' → 'nl' (Dutch)
-    if detected_lang == "nl" and "gelatin" in text.lower():
-        return "en"
-    
-    # Add additional checks for known common misclassifications
-    return detected_lang
 
 # Prediction Route
 @app.route("/predict", methods=["POST"])
@@ -80,23 +79,25 @@ def predict():
         detected_languages = {}
         translated_ingredients = []
 
-        # Detect Language & Translate
         for ingredient in ingredients:
-            detected_lang = detect_language(ingredient)
+            # Detect language skipped; using auto-detection by GoogleTranslator
+            detected_lang = "auto"
             detected_languages[ingredient] = detected_lang
-            translated_text = translate_text(ingredient, detected_lang, "en").lower()
+            translated_text = translate_text(ingredient, detected_lang,
+                                             "en").lower()
             translated_ingredients.append(translated_text)
-            logging.info(f"🌍 Ingredient: {ingredient} | Lang: {detected_lang} | Translated: {translated_text}")
+            logging.info(
+                f"🌍 Ingredient: {ingredient} | Translated: {translated_text}")
 
-        # Prepare inputs for model
-        processed_texts = pad_sequences(tokenizer.texts_to_sequences(translated_ingredients), maxlen=MAX_LENGTH, padding="post", truncating="post")
-
-        # Make predictions
+        processed_texts = pad_sequences(
+            tokenizer.texts_to_sequences(translated_ingredients),
+            maxlen=MAX_LENGTH,
+            padding="post",
+            truncating="post")
         predictions = model.predict(processed_texts).flatten()
         classifications = []
 
         for i, ing in enumerate(ingredients):
-            # Rule-based override for beef gelatin
             if "beef gelatin" in translated_ingredients[i]:
                 classification = "doubtful"
             else:
@@ -109,12 +110,15 @@ def predict():
                     classification = "doubtful"
 
             classifications.append(classification)
-            logging.info(f"📊 {ing} → Score: {predictions[i]:.4f} → Classified: {classification}")
+            logging.info(
+                f"📊 {ing} → Score: {predictions[i]:.4f} → Classified: {classification}"
+            )
 
-        # Prepare response
-        ingredient_predictions = [{"ingredient": ingredients[i], "classification": classifications[i]} for i in range(len(ingredients))]
+        ingredient_predictions = [{
+            "ingredient": ingredients[i],
+            "classification": classifications[i]
+        } for i in range(len(ingredients))]
 
-        # Determine overall classification
         if "haram" in classifications:
             overall_classification = "haram"
         elif "doubtful" in classifications:
@@ -122,18 +126,17 @@ def predict():
         else:
             overall_classification = "halal"
 
-
-        # Return the response with ingredient details and overall classification
-        response = {
+        return jsonify({
             "detected_languages": detected_languages,
             "ingredients": ingredient_predictions,
             "overall_classification": overall_classification
-        }
-
-        return jsonify(response), 200
+        }), 200
 
     except Exception as e:
         logging.error(f"⚠️ Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
+# Run Server (Replit style)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=81)
