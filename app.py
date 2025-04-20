@@ -1,11 +1,11 @@
 from flask import Flask, request, jsonify
-import tensorflow as tf
-import numpy as np
 import os
 import logging
-from tensorflow.keras.preprocessing.sequence import pad_sequences
+import json
 from deep_translator import GoogleTranslator
+from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.preprocessing.text import tokenizer_from_json
+import tflite_runtime.interpreter as tflite
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO,
@@ -13,21 +13,12 @@ logging.basicConfig(level=logging.INFO,
 
 # Initialize Flask app
 app = Flask(__name__)
-app.config['JSON_AS_ASCII'] = False  # Support multilingual output
+app.config['JSON_AS_ASCII'] = False
 
-# Load Model & Tokenizer
-MODEL_PATH = "halal_model.h5"
+# Constants
+MODEL_PATH = "halal_model.tflite"
 TOKENIZER_PATH = "tokenizer.json"
 MAX_LENGTH = 50
-
-logging.info("📥 Loading trained LSTM model...")
-try:
-    model = tf.keras.models.load_model(MODEL_PATH)
-    model.predict(np.zeros((1, MAX_LENGTH)))  # Warm-up model
-    logging.info("✅ Model loaded successfully!")
-except Exception as e:
-    logging.error(f"❌ Model loading failed: {e}")
-    raise RuntimeError(f"❌ Model loading failed: {e}")
 
 # Load Tokenizer
 if os.path.exists(TOKENIZER_PATH):
@@ -37,35 +28,36 @@ if os.path.exists(TOKENIZER_PATH):
 else:
     raise FileNotFoundError("❌ Tokenizer file not found!")
 
+# Load TFLite Model
+logging.info("📥 Loading TFLite model...")
+interpreter = tflite.Interpreter(model_path=MODEL_PATH)
+interpreter.allocate_tensors()
 
-# Home Route
-@app.route("/")
-def home():
-    return jsonify(
-        {"message":
-         "Welcome to the Halal Ingredient Classification API!"}), 200
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+logging.info("✅ TFLite model loaded!")
 
-
-# Translation Function with Caching
+# Translation Cache
 translation_cache = {}
 
-
 def translate_text(text, src_lang="auto", dest_lang="en"):
-    """Translates text with caching to optimize performance."""
     if src_lang == dest_lang or not text.strip():
         return text
     cache_key = f"{text}-{src_lang}-{dest_lang}"
     if cache_key in translation_cache:
         return translation_cache[cache_key]
     try:
-        translated = GoogleTranslator(source=src_lang,
-                                      target=dest_lang).translate(text)
+        translated = GoogleTranslator(source=src_lang, target=dest_lang).translate(text)
         translation_cache[cache_key] = translated
         return translated
     except Exception as e:
         logging.warning(f"⚠️ Translation failed: {e}")
         return text
 
+# Home Route
+@app.route("/")
+def home():
+    return jsonify({"message": "Welcome to the Halal Ingredient Classification API!"}), 200
 
 # Prediction Route
 @app.route("/predict", methods=["POST"])
@@ -80,23 +72,24 @@ def predict():
         translated_ingredients = []
 
         for ingredient in ingredients:
-            # Detect language skipped; using auto-detection by GoogleTranslator
             detected_lang = "auto"
             detected_languages[ingredient] = detected_lang
-            translated_text = translate_text(ingredient, detected_lang,
-                                             "en").lower()
+            translated_text = translate_text(ingredient, detected_lang, "en").lower()
             translated_ingredients.append(translated_text)
-            logging.info(
-                f"🌍 Ingredient: {ingredient} | Translated: {translated_text}")
+            logging.info(f"🌍 Ingredient: {ingredient} | Translated: {translated_text}")
 
-        processed_texts = pad_sequences(
-            tokenizer.texts_to_sequences(translated_ingredients),
-            maxlen=MAX_LENGTH,
-            padding="post",
-            truncating="post")
-        predictions = model.predict(processed_texts).flatten()
+        sequences = tokenizer.texts_to_sequences(translated_ingredients)
+        padded = pad_sequences(sequences, maxlen=MAX_LENGTH, padding="post", truncating="post")
+
+        predictions = []
+        for seq in padded:
+            input_data = [[float(x) for x in seq]]  # No numpy!
+            interpreter.set_tensor(input_details[0]['index'], input_data)
+            interpreter.invoke()
+            output_data = interpreter.get_tensor(output_details[0]['index'])
+            predictions.append(output_data[0][0])
+
         classifications = []
-
         for i, ing in enumerate(ingredients):
             if "beef gelatin" in translated_ingredients[i]:
                 classification = "doubtful"
@@ -108,35 +101,30 @@ def predict():
                     classification = "haram"
                 else:
                     classification = "doubtful"
-
             classifications.append(classification)
-            logging.info(
-                f"📊 {ing} → Score: {predictions[i]:.4f} → Classified: {classification}"
-            )
+            logging.info(f"📊 {ing} → Score: {predictions[i]:.4f} → Classified: {classification}")
 
         ingredient_predictions = [{
             "ingredient": ingredients[i],
             "classification": classifications[i]
         } for i in range(len(ingredients))]
 
+        overall = "halal"
         if "haram" in classifications:
-            overall_classification = "haram"
+            overall = "haram"
         elif "doubtful" in classifications:
-            overall_classification = "doubtful"
-        else:
-            overall_classification = "halal"
+            overall = "doubtful"
 
         return jsonify({
             "detected_languages": detected_languages,
             "ingredients": ingredient_predictions,
-            "overall_classification": overall_classification
+            "overall_classification": overall
         }), 200
 
     except Exception as e:
         logging.error(f"⚠️ Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-
-# Run Server (Replit style)
+# Run app on Replit
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=81)
