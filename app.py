@@ -136,8 +136,4 @@ def predict():
         logging.error(f"⚠️ Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-# Run Flask Server
-if __name__ == "__main__":
-    from waitress import serve  
-    logging.info("🚀 Starting Flask server at: http://127.0.0.1:5000/")
-    serve(app, host="0.0.0.0", port=5000, threads=4)
+
